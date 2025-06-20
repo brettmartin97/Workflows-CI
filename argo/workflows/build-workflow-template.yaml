@@ -1,0 +1,113 @@
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: build-and-push
+spec:
+  serviceAccountName: argo-workflow
+  entrypoint: main
+  templates:
+  - name: main
+    dag:
+      tasks:
+      - name: checkout
+        template: git-checkout
+      - name: lint
+        template: lint
+        dependencies: [checkout]
+      - name: test
+        template: test
+        dependencies: [checkout]
+      - name: build
+        template: build-image
+        dependencies: [lint, test]
+      - name: helm
+        template: helm-package
+        dependencies: [build]
+      - name: push-image
+        template: push-image
+        dependencies: [build]
+      - name: push-chart
+        template: push-chart
+        dependencies: [helm]
+  - name: git-checkout
+    inputs:
+      parameters:
+      - name: repo
+        value: "{{workflow.parameters.repo}}"
+    container:
+      image: alpine/git
+      command: [sh, -c]
+      args: ["git clone https://$GOGS_USERNAME:$GOGS_PASSWORD@{{inputs.parameters.repo}} source"]
+      envFrom:
+      - secretRef:
+          name: gogs-credentials
+  - name: lint
+    container:
+      image: golang:1.20
+      workingDir: /src/source
+      command: [sh, -c]
+      args: ["go vet ./..."]
+      volumeMounts:
+      - name: workdir
+        mountPath: /src
+  - name: test
+    container:
+      image: golang:1.20
+      workingDir: /src/source
+      command: [sh, -c]
+      args: ["go test ./..."]
+      volumeMounts:
+      - name: workdir
+        mountPath: /src
+  - name: build-image
+    container:
+      image: gcr.io/kaniko-project/executor:latest
+      command: ["/kaniko/executor"]
+      args:
+        - "--dockerfile=/src/source/Dockerfile"
+        - "--context=/src/source"
+        - "--destination={{workflow.parameters.image}}"
+      volumeMounts:
+      - name: workdir
+        mountPath: /src
+      envFrom:
+      - secretRef:
+          name: harbor-credentials
+  - name: push-image
+    container:
+      image: alpine
+      command: [sh, -c]
+      args: ["echo pushed $IMAGE"]
+      env:
+      - name: IMAGE
+        value: "{{workflow.parameters.image}}"
+  - name: helm-package
+    container:
+      image: alpine/helm:3.12.2
+      workingDir: /src/source/chart
+      command: [sh, -c]
+      args: ["helm dependency update && helm package ."]
+      volumeMounts:
+      - name: workdir
+        mountPath: /src
+  - name: push-chart
+    container:
+      image: curlimages/curl
+      workingDir: /src/source/chart
+      command: [sh, -c]
+      args: ["curl -u $HARBOR_USERNAME:$HARBOR_PASSWORD --data-binary @*.tgz http://harbor.local/chartrepo/library/charts"]
+      volumeMounts:
+      - name: workdir
+        mountPath: /src
+      envFrom:
+      - secretRef:
+          name: harbor-credentials
+  volumes:
+  - name: workdir
+    emptyDir: {}
+  arguments:
+    parameters:
+    - name: repo
+      value: https://gogs.local/my-org/my-repo.git
+    - name: image
+      value: harbor.local/library/my-app:latest

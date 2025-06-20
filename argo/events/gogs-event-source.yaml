@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: gogs
+spec:
+  service:
+    ports:
+      - port: 12000
+        targetPort: 12000
+  webhook:
+    gogs:
+      endpoint: /
+      port: "12000"
+      method: POST
+      url: /
+      authSecret:
+        name: gogs-secret
+        key: token
